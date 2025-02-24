@@ -1,0 +1,3 @@
+[workspace]
+members = ["gateway", "echo"]
+resolver = "2"
