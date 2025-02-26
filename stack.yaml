@@ -1,0 +1,16 @@
+version: 1.0
+provider:
+  name: openfaas
+  gateway: http://localhost:31112 # 内部网关
+functions:
+  docker-echo:
+    lang: rust-http
+    handler: ./function
+    image: alinche/echo:latest
+    # memory: 128M
+    # environment:
+    #   - VAR1=value1
+  docker-echo-primes:
+    lang: rust-http
+    handler: ./function
+    image: alinche/echo-primes:latest

@@ -4,11 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-actix-web = "4.0"        # Web框架
-tokio = { version = "1.0", features = ["full"] }  # 异步运行时
-reqwest = "0.11"         # HTTP客户端（用于反向代理）
+actix-web = "4.0"                                  # Web框架
+tokio = { version = "1.0", features = ["full"] }   # 异步运行时
+reqwest = "0.11"                                   # HTTP客户端（用于反向代理）
+config = "0.14"                                    # 导入config
 serde = { version = "1.0", features = ["derive"] } # 序列化
-lazy_static = "1.4"      # 全局状态管理
-url = "2.4"              # URL解析
-env_logger = "0.11"      # 日志记录
+serde_yaml = "0.9"
+lazy_static = "1.4"                                # 全局状态管理
+url = "2.4"                                        # URL解析
+env_logger = "0.11"                                # 日志记录
 
