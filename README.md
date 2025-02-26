@@ -18,5 +18,5 @@ curl -X POST http://localhost:<port>/echo \
 
 # docker-echo
 curl -X POST http://localhost:<port>/echo/uppercase -d "hello"
-curl -X POST http://localhost:8051/echo/primes -d "10017221"
+curl -X POST http://localhost:<port>/echo/primes -d "10017221"
 ```

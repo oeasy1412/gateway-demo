@@ -17,10 +17,8 @@ use gateway::{load_config, Function};
 lazy_static! {
     static ref SERVICE_REGISTRY: Arc<Mutex<HashMap<String, u16>>> =
         Arc::new(Mutex::new(HashMap::new()));
-
-    static ref SERVICE_CONFIG_MAP: Mutex<HashMap<String, Function>> = {
-        Mutex::new(HashMap::new())
-    };
+    static ref SERVICE_CONFIG_MAP: Mutex<HashMap<String, Function>> =
+        Mutex::new(HashMap::new());
 }
 
 static NEXT_PORT: AtomicU16 = AtomicU16::new(8050);
@@ -103,24 +101,8 @@ async fn get_or_start_service(service_name: &str) -> Result<u16, String> {
     }
 
     println!("🚀 Starting {} service on port {}", service_name, port);
+    let functions = SERVICE_CONFIG_MAP.lock().unwrap();
     let mut child = match service_name {
-        "docker-echo" |"docker-echo-primes" => {
-            let function = SERVICE_CONFIG_MAP.lock().unwrap().get(service_name).cloned();
-            let port_forwarding = format!("{}:{}", port, 3000);
-            let image_name_str: String = if let Some(func) = function {
-                func.image
-            } else {
-                panic!("Function not found for image in: {}", service_name);
-            };
-            let mut child = AsyncCommand::new("docker")
-                .args(&["run", "-p", &port_forwarding, "--pull=missing", "--rm", "-d", &image_name_str,])
-                .stdout(Stdio::piped())
-                .spawn()
-                .map_err(|e| format!("Failed to start service: {}", e))?;
-            let status = child.wait().await.expect("Docker service failed");
-            println!("Child exited with status: {}", status);
-            child
-        }
         "echo" => {
             let child = AsyncCommand::new("cargo")
                 .args(&["run", "--bin", "echo", "--", "--port", &port.to_string()])
@@ -131,7 +113,27 @@ async fn get_or_start_service(service_name: &str) -> Result<u16, String> {
             println!("Local service started successfully.");
             child
         }
-        _ => return Err(format!("Unknown service: {}", service_name)),
+        _ => {
+            if functions.contains_key(service_name) {
+                let function = functions.get(service_name).cloned();
+                let port_forwarding = format!("{}:{}", port, 3000);
+                let image_name_str: String = if let Some(func) = function {
+                    func.image
+                } else {
+                    panic!("Function not found for image in: {}", service_name);
+                };
+                let mut child = AsyncCommand::new("docker")
+                    .args(&["run", "-p", &port_forwarding, "--pull=missing", "--rm", "-d", &image_name_str,])
+                    .stdout(Stdio::piped())
+                    .spawn()
+                    .map_err(|e| format!("Failed to start service: {}", e))?;
+                let status = child.wait().await.expect("Docker service failed");
+                println!("Child exited with status: {}", status);
+                child
+            } else {
+                return Err(format!("Unknown service: {}", service_name));
+            }
+        }
     };
 
     // 等待服务绑定端口

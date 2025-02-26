@@ -22,15 +22,15 @@ pub struct Function {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-pub struct OpenFaaConfig {
+pub struct OpenFaaSConfig {
     pub provider: Provider,
     pub functions: HashMap<String, Function>,
 }
 
-pub fn load_config(file_path: &str) -> Result<OpenFaaConfig, config::ConfigError> {
+pub fn load_config(file_path: &str) -> Result<OpenFaaSConfig, config::ConfigError> {
     let config = Config::builder()
         .set_default("provider.name", "openfaas")?
-        .set_default("provider.gateway", "http://127.0.0.1:31112")?
+        .set_default("provider.gateway", "http://127.0.0.1:8090")?
         .set_default("provider.memory", "128M")?
         .set_default("provider.environment", "")?
         // 添加 YAML 文件作为配置源
