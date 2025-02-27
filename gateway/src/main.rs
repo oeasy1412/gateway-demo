@@ -1,4 +1,5 @@
-use actix_web::{web, App, HttpResponse, HttpServer, Responder};
+use actix_web::{web, App, HttpRequest,HttpResponse, HttpServer, Responder,Error};
+use futures::StreamExt;
 use lazy_static::lazy_static;
 use reqwest::Client;
 use std::collections::HashMap;
@@ -37,7 +38,7 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         App::new()
             // .app_data(web::Data::new(config.clone()))
-            .route("/{service_name}/{path:.*}", web::get().to(handle_request))
+            .route("/{service_name}{path:/?.*}", web::to(handle_request))
     })
     .bind("0.0.0.0:8090")?
     .run()
@@ -67,8 +68,14 @@ async fn get_config(config_path: &str) {
     }
 }
 
-async fn handle_request(path: web::Path<(String, String)>) -> impl Responder {
-    let (service_name, rest_path) = path.into_inner();
+async fn handle_request(req: HttpRequest, payload: web::Payload) -> impl Responder {
+    // let (service_name, rest_path):(String,String) = req.match_info().load().unwrap();
+    // let (service_name, rest_path) = (service_name.to_string(), rest_path.to_string());
+
+    let service_name = req.match_info().get("service_name").unwrap().to_string();
+    let rest_path = req.match_info().get("path").unwrap_or("").to_string(); 
+
+    println!("{}, {}", service_name, rest_path);
 
     let port = match get_or_start_service(&service_name).await {
         Ok(p) => p,
@@ -78,12 +85,16 @@ async fn handle_request(path: web::Path<(String, String)>) -> impl Responder {
     let rest_path = if rest_path.is_empty() {
         "".to_string()
     } else {
-        format!("/{}", rest_path)
+        format!("{}", rest_path)
     };
 
     let target_url = format!("http://0.0.0.0:{}{}", port, rest_path);
+    println!("target_url: {}", target_url);
 
-    proxy_request(&target_url).await
+    match proxy_request(&target_url, &req, payload).await{
+        Ok(resp)=>{resp}
+        Err(e)=>{return HttpResponse::InternalServerError().body(e.to_string())}
+    }
 }
 
 async fn get_or_start_service(service_name: &str) -> Result<u16, String> {
@@ -98,11 +109,11 @@ async fn get_or_start_service(service_name: &str) -> Result<u16, String> {
 
     println!("🔍 Verifying port {} availability...", port);
     match TcpListener::bind(("0.0.0.0", port)) {
-        Ok(_) => println!("✅ Port {} is available", port),
+        Ok(_) => println!(" Port {} is available", port),
         Err(e) => return Err(format!("Port {} check failed: {:?}", port, e)),
     }
 
-    println!("🚀 Starting {} service on port {}", service_name, port);
+    println!(" Starting {} service on port {}", service_name, port);
     let mut child = match service_name {
         "docker-echo" |"docker-echo-primes" => {
             let function = SERVICE_CONFIG_MAP.lock().unwrap().get(service_name).cloned();
@@ -147,19 +158,54 @@ async fn get_or_start_service(service_name: &str) -> Result<u16, String> {
             }
             return Err(format!("Port {} not occupied after startup", port));
         }
-        Err(_) => println!("✅ Port {} occupied successfully", port),
+        Err(_) => println!(" Port {} occupied successfully", port),
     }
 
     registry.insert(service_name.to_string(), port);
     Ok(port)
 }
 
-async fn proxy_request(target_url: &str) -> HttpResponse {
+async fn proxy_request(target_url: &str, req: &HttpRequest, mut payload: web::Payload) -> Result<HttpResponse,Error>{
     let client = Client::new();
-    let url = Url::parse(target_url).unwrap();
+    // let mut url = Url::parse(target_url).unwrap();
 
-    match client.get(url).send().await {
-        Ok(resp) => HttpResponse::build(resp.status()).body(resp.bytes().await.unwrap()),
-        Err(e) => HttpResponse::BadGateway().body(e.to_string()),
+    // let service_name = req.match_info().get("service_name").unwrap().to_string();
+    // let rest_path = req.match_info().get("path").unwrap_or("").to_string(); 
+
+    // let url=url.join("/{}")
+
+    let mut forwarded_req = client.request(req.method().clone(), target_url)
+        .headers(req.headers().clone().into());
+
+    let mut body = web::BytesMut::new();
+    while let Some(chunk) = payload.next().await {
+        let chunk = chunk?;
+        body.extend_from_slice(&chunk);
+    }
+
+    let body_bytes = body.freeze();
+
+    if let Some(content_type) = req.headers().get("Content-Type") {
+        forwarded_req = forwarded_req.header("Content-Type", content_type);
+    }
+
+    match forwarded_req.body(body_bytes).send().await {
+         Ok(resp) => //Ok(HttpResponse::build(resp.status())
+        //     .insert_header(("Content-Type", resp.headers().get("Content-Type").unwrap()))
+        //     .body(resp.bytes().await.unwrap())),
+        {
+            let status = resp.status();
+            let mut client_resp = HttpResponse::build(status);
+            
+            // 复制所有响应头
+            for (name, value) in resp.headers().iter() {
+                client_resp.insert_header((name.clone(), value.clone()));
+            }
+            
+            // 读取 body
+            let body = resp.bytes().await.unwrap();
+            Ok(client_resp.body(body))
+        }
+        Err(e) => Ok(HttpResponse::BadGateway().body(e.to_string())),
     }
 }
