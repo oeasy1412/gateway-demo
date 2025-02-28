@@ -1,7 +1,7 @@
 version: 1.0
 provider:
   name: openfaas
-  gateway: http://localhost:31112 # 内部网关
+  gateway: http://localhost:8090 # 内部网关
 functions:
   docker-echo:
     lang: rust-http

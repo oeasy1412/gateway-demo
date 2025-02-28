@@ -1,4 +1,4 @@
-use actix_web::{web, App, HttpRequest,HttpResponse, HttpServer, Responder,Error};
+use actix_web::{web, App, Error, HttpRequest, HttpResponse, HttpServer, Responder};
 use futures::StreamExt;
 use lazy_static::lazy_static;
 use reqwest::Client;
@@ -18,8 +18,7 @@ use gateway::{load_config, Function};
 lazy_static! {
     static ref SERVICE_REGISTRY: Arc<Mutex<HashMap<String, u16>>> =
         Arc::new(Mutex::new(HashMap::new()));
-    static ref SERVICE_CONFIG_MAP: Mutex<HashMap<String, Function>> =
-        Mutex::new(HashMap::new());
+    static ref SERVICE_CONFIG_MAP: Mutex<HashMap<String, Function>> = Mutex::new(HashMap::new());
 }
 
 static NEXT_PORT: AtomicU16 = AtomicU16::new(8050);
@@ -32,33 +31,37 @@ fn find_available_port(start_port: u16) -> Option<u16> {
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     env_logger::init();
-    get_config("stack.yaml").await; // 配置文件，但其实不应该在这
+    let port = get_config("stack.yaml").await;
+    let bind_url = format!("0.0.0.0:{}", port);
     HttpServer::new(move || {
         App::new()
             // .app_data(web::Data::new(config.clone()))
             .route("/{service_name}{path:/?.*}", web::to(handle_request))
     })
-    .bind("0.0.0.0:8090")?
+    .bind(bind_url)?
     .run()
     .await
 }
 
-async fn get_config(config_path: &str) {
+async fn get_config(config_path: &str) -> u16 {
     match load_config(config_path) {
         Ok(config) => {
-            println!("provider:\n  name: {}", config.provider.name);
-            println!("  gateway: {}", config.provider.gateway);
-            for (name, function) in &config.functions {
-                println!("function: {}", name);
-                println!("  lang: {}", function.lang);
-                println!("  handler: {}", function.handler);
-                println!("  image: {}", function.image);
-                println!("  memory: {}", function.memory);
-                println!("  environment: {:?}", function.environment);
-            }
-
-            let mut functions = SERVICE_CONFIG_MAP.lock().unwrap();
-            *functions = config.functions.clone();
+            let port = match Url::parse(&config.provider.gateway) {
+                Ok(url) => {
+                    // 检查端口号是否存在
+                    let port = match url.port() {
+                        Some(port) => port,
+                        None => panic!("URL 中未指定端口号"),
+                    };
+                    let mut functions = SERVICE_CONFIG_MAP.lock().unwrap();
+                    *functions = config.functions.clone();
+                    port
+                }
+                Err(e) => {
+                    panic!("Failed to parse URL: {}", e);
+                }
+            };
+            port
         }
         Err(e) => {
             panic!("Failed to load config: {}", e);
@@ -70,49 +73,68 @@ async fn handle_request(req: HttpRequest, payload: web::Payload) -> impl Respond
     // let (service_name, rest_path):(String,String) = req.match_info().load().unwrap();
     // let (service_name, rest_path) = (service_name.to_string(), rest_path.to_string());
 
-    let service_name = req.match_info().get("service_name").unwrap().to_string();
-    let rest_path = req.match_info().get("path").unwrap_or("").to_string(); 
-
-    println!("{}, {}", service_name, rest_path);
-
-    let port = match get_or_start_service(&service_name).await {
+    let service_name = req.match_info().get("service_name").unwrap();
+    let rest_path = req.match_info().get("path").unwrap_or("");
+    
+    let port = match get_or_start_service(service_name).await {
         Ok(p) => p,
         Err(e) => return HttpResponse::InternalServerError().body(e),
     };
+    
+    // println!("Service Name: {}, Rest Path: {}", service_name, rest_path);
+    // let rest_path = if rest_path.is_empty()  {
+    //     ""
+    // } else if rest_path.contains("..") || rest_path.contains("./"){
+    //     eprintln!("检测到潜在的路径遍历攻击！");
+    //     ""
+    // } else {
+    //     rest_path
+    // };
+    println!("Service Name: {}, Rest Path: {}", service_name, rest_path);
 
-    let rest_path = if rest_path.is_empty() {
-        "".to_string()
-    } else {
-        format!("{}", rest_path)
+    let user_input = format!("http://0.0.0.0:{}{}", port, rest_path);
+    let target_url = match Url::parse(&user_input) {
+        Ok(mut url) => {
+            url.set_path(&url.path().replace("//", "/"));
+            // url.path_segments_mut().map_err(|_| "cannot be base").unwrap().pop();
+            url
+        }
+        Err(_) => {
+            eprint!("无法解析 URL，请检查格式是否正确。");
+            Url::parse("").unwrap()
+        }
     };
-
-    let target_url = format!("http://0.0.0.0:{}{}", port, rest_path);
     println!("target_url: {}", target_url);
+    let url_str = target_url.to_string();
 
-    match proxy_request(&target_url, &req, payload).await{
-        Ok(resp)=>{resp}
-        Err(e)=>{return HttpResponse::InternalServerError().body(e.to_string())}
+    match proxy_request(&url_str, &req, payload).await {
+        Ok(resp) => resp,
+        Err(e) => return HttpResponse::InternalServerError().body(e.to_string()),
     }
 }
 
 async fn get_or_start_service(service_name: &str) -> Result<u16, String> {
-    let mut registry = SERVICE_REGISTRY.lock().unwrap();
-
-    if let Some(port) = registry.get(service_name) {
-        return Ok(*port);
-    }
-
-    let start_port = NEXT_PORT.fetch_add(1, Ordering::SeqCst);
-    let port = find_available_port(start_port).ok_or("No available ports in range 8050-8100")?;
-
-    println!("🔍 Verifying port {} availability...", port);
-    match TcpListener::bind(("0.0.0.0", port)) {
-        Ok(_) => println!(" Port {} is available", port),
-        Err(e) => return Err(format!("Port {} check failed: {:?}", port, e)),
-    }
-
-    println!("🚀 Starting {} service on port {}", service_name, port);
+    let mut port : u16 = Default::default();
     let functions = SERVICE_CONFIG_MAP.lock().unwrap();
+    if functions.contains_key(service_name) || service_name == "echo" {
+        let mut registry = SERVICE_REGISTRY.lock().unwrap();
+
+        if let Some(port) = registry.get(service_name) {
+            return Ok(*port);
+        }
+
+        let start_port = NEXT_PORT.fetch_add(1, Ordering::SeqCst);
+        port = find_available_port(start_port).ok_or("No available ports in range 8050-8100")?;
+
+        println!("🔍 Verifying port {} availability...", port);
+        match TcpListener::bind(("0.0.0.0", port)) {
+            Ok(_) => println!(" Port {} is available", port),
+            Err(e) => return Err(format!("Port {} check failed: {:?}", port, e)),
+        }
+
+        println!("🚀 Starting {} service on port {}", service_name, port);
+        registry.insert(service_name.to_string(), port);
+    }
     let mut child = match service_name {
         "echo" => {
             let child = AsyncCommand::new("cargo")
@@ -134,7 +156,7 @@ async fn get_or_start_service(service_name: &str) -> Result<u16, String> {
                     panic!("Function not found for image in: {}", service_name);
                 };
                 let mut child = AsyncCommand::new("docker")
-                    .args(&["run", "-p", &port_forwarding, "--pull=missing", "--rm", "-d", &image_name_str,])
+                    .args(&["run", "-p", &port_forwarding, "--pull=missing", "--rm", "-d", &image_name_str])
                     .stdout(Stdio::piped())
                     .spawn()
                     .map_err(|e| format!("Failed to start service: {}", e))?;
@@ -163,20 +185,20 @@ async fn get_or_start_service(service_name: &str) -> Result<u16, String> {
         Err(_) => println!(" Port {} occupied successfully", port),
     }
 
-    registry.insert(service_name.to_string(), port);
     Ok(port)
 }
 
-async fn proxy_request(target_url: &str, req: &HttpRequest, mut payload: web::Payload) -> Result<HttpResponse,Error>{
+async fn proxy_request(target_url: &str, req: &HttpRequest, mut payload: web::Payload) -> Result<HttpResponse, Error> {
     let client = Client::new();
     // let mut url = Url::parse(target_url).unwrap();
 
     // let service_name = req.match_info().get("service_name").unwrap().to_string();
-    // let rest_path = req.match_info().get("path").unwrap_or("").to_string(); 
+    // let rest_path = req.match_info().get("path").unwrap_or("").to_string();
 
     // let url=url.join("/{}")
 
-    let mut forwarded_req = client.request(req.method().clone(), target_url)
+    let mut forwarded_req = client
+        .request(req.method().clone(), target_url)
         .headers(req.headers().clone().into());
 
     let mut body = web::BytesMut::new();
@@ -192,18 +214,19 @@ async fn proxy_request(target_url: &str, req: &HttpRequest, mut payload: web::Pa
     }
 
     match forwarded_req.body(body_bytes).send().await {
-         Ok(resp) => //Ok(HttpResponse::build(resp.status())
+        Ok(resp) =>
+        //Ok(HttpResponse::build(resp.status())
         //     .insert_header(("Content-Type", resp.headers().get("Content-Type").unwrap()))
         //     .body(resp.bytes().await.unwrap())),
         {
             let status = resp.status();
             let mut client_resp = HttpResponse::build(status);
-            
+
             // 复制所有响应头
             for (name, value) in resp.headers().iter() {
                 client_resp.insert_header((name.clone(), value.clone()));
             }
-            
+
             // 读取 body
             let body = resp.bytes().await.unwrap();
             Ok(client_resp.body(body))
