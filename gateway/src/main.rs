@@ -1,4 +1,6 @@
+
 use actix_web::{web, App, Error, HttpRequest, HttpResponse, HttpServer, Responder};
+
 use futures::StreamExt;
 use lazy_static::lazy_static;
 use reqwest::Client;
@@ -80,6 +82,7 @@ async fn handle_request(req: HttpRequest, payload: web::Payload) -> impl Respond
         Ok(p) => p,
         Err(e) => return HttpResponse::InternalServerError().body(e),
     };
+
     
     // println!("Service Name: {}, Rest Path: {}", service_name, rest_path);
     // let rest_path = if rest_path.is_empty()  {
@@ -107,9 +110,11 @@ async fn handle_request(req: HttpRequest, payload: web::Payload) -> impl Respond
     println!("target_url: {}", target_url);
     let url_str = target_url.to_string();
 
+
     match proxy_request(&url_str, &req, payload).await {
         Ok(resp) => resp,
         Err(e) => return HttpResponse::InternalServerError().body(e.to_string()),
+
     }
 }
 
@@ -126,6 +131,7 @@ async fn get_or_start_service(service_name: &str) -> Result<u16, String> {
         let start_port = NEXT_PORT.fetch_add(1, Ordering::SeqCst);
         port = find_available_port(start_port).ok_or("No available ports in range 8050-8100")?;
 
+
         println!("🔍 Verifying port {} availability...", port);
         match TcpListener::bind(("0.0.0.0", port)) {
             Ok(_) => println!(" Port {} is available", port),
@@ -135,6 +141,7 @@ async fn get_or_start_service(service_name: &str) -> Result<u16, String> {
         println!("🚀 Starting {} service on port {}", service_name, port);
         registry.insert(service_name.to_string(), port);
     }
+
     let mut child = match service_name {
         "echo" => {
             let child = AsyncCommand::new("cargo")
@@ -188,7 +195,9 @@ async fn get_or_start_service(service_name: &str) -> Result<u16, String> {
     Ok(port)
 }
 
+
 async fn proxy_request(target_url: &str, req: &HttpRequest, mut payload: web::Payload) -> Result<HttpResponse, Error> {
+
     let client = Client::new();
     // let mut url = Url::parse(target_url).unwrap();
 
@@ -205,6 +214,7 @@ async fn proxy_request(target_url: &str, req: &HttpRequest, mut payload: web::Pa
     while let Some(chunk) = payload.next().await {
         let chunk = chunk?;
         body.extend_from_slice(&chunk);
+
     }
 
     let body_bytes = body.freeze();
@@ -232,5 +242,8 @@ async fn proxy_request(target_url: &str, req: &HttpRequest, mut payload: web::Pa
             Ok(client_resp.body(body))
         }
         Err(e) => Ok(HttpResponse::BadGateway().body(e.to_string())),
+
     }
+
+  
 }
