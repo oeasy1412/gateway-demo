@@ -38,7 +38,8 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         App::new()
             // .app_data(web::Data::new(config.clone()))
-            .route("/{service_name}{path:/?.*}", web::to(handle_request))
+            .app_data(proxy.clone())
+            .route("/{service_name}{path:/?.*}", web::to(proxy_handler))
     })
     .bind(bind_url)?
     .run()
