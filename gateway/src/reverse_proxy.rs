@@ -2,9 +2,7 @@ use actix_web::{web, Error, HttpRequest, HttpResponse, Responder};
 
 use futures::StreamExt;
 use reqwest::Client;
-use std::net::IpAddr;
-use std::net::Ipv4Addr;
-use std::net::TcpListener;
+use std::net::{IpAddr, Ipv4Addr, TcpListener};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU16, Ordering};
 
@@ -36,7 +34,6 @@ impl ReverseProxy {
     pub async fn handle_request(&self, req: HttpRequest, payload: web::Payload) -> impl Responder {
         let service_name = req.match_info().get("service_name").unwrap();
         let rest_path = req.match_info().get("path").unwrap_or("");
-        println!("111");
 
         let (address, port) = match self.get_or_start_service(service_name).await {
             Ok((a, p)) => (a, p),
@@ -58,9 +55,8 @@ impl ReverseProxy {
             }
         };
         println!("target_url: {}", target_url);
-        let url_str = target_url.to_string();
 
-        match self.proxy_request(&url_str, &req, payload).await {
+        match self.proxy_request(&target_url.to_string(), &req, payload).await {
             Ok(resp) => resp,
             Err(e) => return HttpResponse::InternalServerError().body(e.to_string()),
         }
